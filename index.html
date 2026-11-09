@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>機台盤點掃描</title>
+<title>機台 QR 掃描</title>
 <style>
 :root{font-family:system-ui,-apple-system,"Noto Sans TC",sans-serif;--bg:#101820;--panel:#192630;--ink:#eef6fa;--muted:#a8bac6;--line:#33444f;--accent:#2aa3b4;--good:#36b77a;--warn:#e4a947;--bad:#e46d6d}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink)}main{max-width:720px;margin:auto;padding:14px}.top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}.top h1{font-size:22px;margin:0 0 4px}.muted{color:var(--muted);font-size:13px}.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:9px;padding:9px 13px;font:inherit}.btn.primary{background:var(--accent);border-color:var(--accent);color:white}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}.statusbar{display:flex;gap:8px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:10px}.pill{display:inline-block;border-radius:99px;padding:5px 9px;font-size:12px}.pill.good{background:#173d2f;color:#b8efd1}.pill.warn{background:#4a371b;color:#f7d8a0}.pill.bad{background:#4a2828;color:#f7bebe}#reader{width:100%;min-height:310px;background:#000;border-radius:12px;overflow:hidden}#reader video{width:100%!important;max-height:62vh;object-fit:cover}.message{min-height:22px;margin-top:10px;font-size:14px}.flash{animation:flash .28s ease}@keyframes flash{0%{box-shadow:0 0 0 5px #36b77a88}100%{box-shadow:none}}.scroll{overflow:auto;max-height:42vh}table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:9px 7px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{font-size:11px;color:var(--muted);white-space:nowrap}.upload{font-weight:700}.upload.pending{color:var(--warn)}.upload.uploading{color:#8fb7ff}.upload.done{color:var(--good)}.upload.failed{color:var(--bad)}.empty{text-align:center;color:var(--muted);padding:20px}.sticky{position:sticky;top:0;z-index:2;background:var(--bg);padding-top:max(0px,env(safe-area-inset-top))}@media(max-width:520px){main{padding:10px}.panel{padding:10px}.top h1{font-size:20px}th:nth-child(4),td:nth-child(4){display:none}}
 </style>
@@ -13,7 +13,7 @@
 <main>
   <div class="sticky">
     <div class="top">
-      <div><h1>盤點相機掃描</h1><div class="muted" id="sessionInfo">正在連線主系統…</div></div>
+      <div><h1 id="scannerTitle">機台 QR 掃描</h1><div class="muted" id="sessionInfo">正在連線主系統…</div></div>
       <button class="btn" onclick="finishScanner()">結束</button>
     </div>
   </div>
@@ -23,25 +23,63 @@
     <div class="message" id="message">請允許相機權限，之後直接對準 QR Code。</div>
     <div style="margin-top:10px"><button class="btn primary" id="retryBtn" style="display:none" onclick="startCamera()">重新啟動相機</button></div>
   </section>
-  <section class="panel">
-    <div class="statusbar"><b>本次掃描紀錄</b><span class="muted">掃到即記錄，背景自動上傳</span></div>
+  <section class="panel" id="recordsPanel">
+    <div class="statusbar"><b>本次掃描紀錄</b><span class="muted" id="recordHint">掃到即記錄，背景自動上傳</span></div>
     <div class="scroll"><table><thead><tr><th>機台</th><th>遊戲名稱</th><th>樓層</th><th>結果</th><th>上傳</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="empty">尚未掃描</td></tr></tbody></table></div>
   </section>
 </main>
 <script>
-const app={scanner:null,started:false,sessionName:'',floorLabel:'',records:new Map(),tokenToRequest:new Map(),lastSeen:new Map(),count:0,openerReady:false};
+const app={scanner:null,started:false,mode:'inventory',sessionName:'',floorLabel:'',records:new Map(),tokenToRequest:new Map(),lastSeen:new Map(),count:0,openerReady:false,lookupPending:false};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const token=()=>globalThis.crypto?.randomUUID?.()||('scan-'+Date.now()+'-'+Math.random().toString(36).slice(2));
 function post(msg){try{if(window.opener&&!window.opener.closed)window.opener.postMessage(msg,'*')}catch(e){}}
 function setMessage(t,bad=false){$('message').textContent=t;$('message').style.color=bad?'var(--bad)':''}
-function render(){const arr=[...app.records.values()].sort((a,b)=>b.seq-a.seq);$('countText').textContent='本次 '+app.count+' 台';$('rows').innerHTML=arr.length?arr.map(r=>`<tr><td><b>${esc(r.machineNumber||r.code||'—')}</b><div class="muted">${esc(r.time||'')}</div></td><td>${esc(r.gameName||'—')}</td><td>${esc(r.floorLabel||app.floorLabel||'—')}</td><td>${esc(r.result||'辨識成功')}</td><td><span class="upload ${r.uploadClass||'pending'}">${esc(r.uploadText||'待上傳')}</span>${r.message?`<div class="muted">${esc(r.message)}</div>`:''}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">尚未掃描</td></tr>'}
-function addProvisional(code){const scanToken=token(),now=Date.now();const key=String(code||'').trim();if(!key)return null;const prev=app.lastSeen.get(key)||0;if(now-prev<5000)return null;app.lastSeen.set(key,now);app.count++;const rec={scanToken,seq:now,code:key,machineNumber:key,gameName:'',floorLabel:app.floorLabel,result:'辨識成功',uploadText:'等待主系統',uploadClass:'pending',time:new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})};app.records.set(scanToken,rec);render();post({type:'SCAN',scanToken,code:key});setMessage('✓ 已辨識 '+key+'，已交由主系統背景上傳，可直接掃下一台。');const p=$('cameraPanel');p.classList.remove('flash');void p.offsetWidth;p.classList.add('flash');return scanToken}
+function applyModeUi(){const device=app.mode==='device';$('scannerTitle').textContent=device?'掃描設備':'盤點相機掃描';$('recordsPanel').style.display=device?'none':'';$('recordHint').textContent=device?'掃描後自動返回主系統':'掃到即記錄，背景自動上傳';$('countText').textContent=device?'單台設備查詢':'本次 '+app.count+' 台';if(device){$('sessionInfo').textContent='掃描後自動開啟設備詳情';setMessage(app.lookupPending?'正在取得設備資料…':'請對準設備 QR Code；辨識後會自動返回機台詳情。')}else{$('sessionInfo').textContent=(app.sessionName||'盤點')+' · '+(app.floorLabel||'未指定樓層')}}
+function render(){const arr=[...app.records.values()].sort((a,b)=>b.seq-a.seq);$('countText').textContent=app.mode==='device'?'單台設備查詢':'本次 '+app.count+' 台';$('rows').innerHTML=arr.length?arr.map(r=>`<tr><td><b>${esc(r.machineNumber||r.code||'—')}</b><div class="muted">${esc(r.time||'')}</div></td><td>${esc(r.gameName||'—')}</td><td>${esc(r.floorLabel||app.floorLabel||'—')}</td><td>${esc(r.result||'辨識成功')}</td><td><span class="upload ${r.uploadClass||'pending'}">${esc(r.uploadText||'待上傳')}</span>${r.message?`<div class="muted">${esc(r.message)}</div>`:''}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">尚未掃描</td></tr>'}
+function addProvisional(code){const scanToken=token(),now=Date.now();const key=String(code||'').trim();if(!key)return null;if(app.mode==='device'&&app.lookupPending)return null;const prev=app.lastSeen.get(key)||0;if(now-prev<5000)return null;app.lastSeen.set(key,now);app.count++;if(app.mode==='device')app.lookupPending=true;const rec={scanToken,seq:now,code:key,machineNumber:key,gameName:'',floorLabel:app.floorLabel,result:'辨識成功',uploadText:app.mode==='device'?'查詢中':'等待主系統',uploadClass:'pending',time:new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})};app.records.set(scanToken,rec);render();post({type:'SCAN',scanToken,code:key,mode:app.mode});setMessage(app.mode==='device'?'✓ 已辨識 '+key+'，正在取得設備資料…':'✓ 已辨識 '+key+'，已交由主系統背景上傳，可直接掃下一台。');const p=$('cameraPanel');p.classList.remove('flash');void p.offsetWidth;p.classList.add('flash');return scanToken}
 function onDecode(decodedText){addProvisional(decodedText)}
-async function startCamera(){if(app.started)return;$('retryBtn').style.display='none';$('cameraState').className='pill warn';$('cameraState').textContent='正在開啟相機';setMessage('正在要求相機權限…');try{if(typeof Html5Qrcode==='undefined')throw new Error('QR 掃描元件載入失敗，請確認網路連線。');const scanner=new Html5Qrcode('reader');app.scanner=scanner;const config={fps:12,qrbox:(w,h)=>{const size=Math.floor(Math.min(w,h)*0.72);return{width:size,height:size}},aspectRatio:1.333333};if(typeof Html5QrcodeSupportedFormats!=='undefined')config.formatsToSupport=[Html5QrcodeSupportedFormats.QR_CODE];await scanner.start({facingMode:'environment'},config,onDecode,()=>{});app.started=true;$('cameraState').className='pill good';$('cameraState').textContent='相機掃描中';setMessage('請連續對準機台 QR Code；掃到後不必停下來等待上傳。')}catch(e){app.started=false;$('cameraState').className='pill bad';$('cameraState').textContent='相機無法啟動';setMessage('無法開啟相機：'+(e.message||e),true);$('retryBtn').style.display='inline-block'}}
+async function startCamera(){if(app.started)return;$('retryBtn').style.display='none';$('cameraState').className='pill warn';$('cameraState').textContent='正在開啟相機';setMessage('正在要求相機權限…');try{if(typeof Html5Qrcode==='undefined')throw new Error('QR 掃描元件載入失敗，請確認網路連線。');const scanner=new Html5Qrcode('reader');app.scanner=scanner;const config={fps:12,qrbox:(w,h)=>{const size=Math.floor(Math.min(w,h)*0.72);return{width:size,height:size}},aspectRatio:1.333333};if(typeof Html5QrcodeSupportedFormats!=='undefined')config.formatsToSupport=[Html5QrcodeSupportedFormats.QR_CODE];await scanner.start({facingMode:'environment'},config,onDecode,()=>{});app.started=true;$('cameraState').className='pill good';$('cameraState').textContent='相機掃描中';setMessage(app.mode==='device'?'請對準設備 QR Code；掃到後會自動取得機台資料。':'請連續對準機台 QR Code；掃到後不必停下來等待上傳。')}catch(e){app.started=false;$('cameraState').className='pill bad';$('cameraState').textContent='相機無法啟動';setMessage('無法開啟相機：'+(e.message||e),true);$('retryBtn').style.display='inline-block'}}
 async function stopCamera(){if(app.scanner){try{await app.scanner.stop()}catch(e){}try{app.scanner.clear()}catch(e){}app.scanner=null}app.started=false}
 async function finishScanner(){post({type:'SCANNER_CLOSED'});await stopCamera();window.close()}
-window.addEventListener('message',event=>{if(event.source!==window.opener)return;const d=event.data||{};if(d.type==='INIT'){app.sessionName=d.sessionName||'';app.floorLabel=d.floorLabel||d.floorId||'';$('sessionInfo').textContent=(app.sessionName||'盤點')+' · '+(app.floorLabel||'未指定樓層');app.openerReady=true;return}if(d.type==='SCAN_ACCEPTED'){const r=app.records.get(d.scanToken);if(!r)return;r.requestId=d.requestId;app.tokenToRequest.set(d.requestId,d.scanToken);if(d.record){r.machineNumber=d.record.machineNumber||r.machineNumber;r.gameName=d.record.gameName||'';r.floorLabel=d.record.actualFloorLabel||r.floorLabel;r.result=d.record.result||r.result;r.uploadText='待上傳';r.uploadClass='pending'}render();return}if(d.type==='SCAN_IGNORED'||d.type==='SCAN_REJECTED'){const r=app.records.get(d.scanToken);if(r){r.uploadText=d.type==='SCAN_IGNORED'?'已略過':'未記錄';r.uploadClass=d.type==='SCAN_IGNORED'?'pending':'failed';r.message=d.message||''}render();return}if(d.type==='UPLOAD_STATUS'){const scanToken=app.tokenToRequest.get(d.requestId);const r=scanToken?app.records.get(scanToken):null;if(!r)return;if(d.record){r.machineNumber=d.record.machineNumber||r.machineNumber;r.gameName=d.record.gameName||r.gameName;r.floorLabel=d.record.actualFloorLabel||r.floorLabel;r.result=d.record.result||r.result}if(d.status==='UPLOADING'){r.uploadText='上傳中';r.uploadClass='uploading'}else if(d.status==='UPLOADED'){r.uploadText='已上傳';r.uploadClass='done'}else if(d.status==='FAILED'){r.uploadText='上傳失敗';r.uploadClass='failed';r.message=d.message||''}render()}});
+window.addEventListener('message',event=>{
+  if(event.source!==window.opener)return;
+  const d=event.data||{};
+  if(d.type==='INIT'){
+    app.mode=d.mode==='device'?'device':'inventory';
+    app.sessionName=d.sessionName||'';
+    app.floorLabel=d.floorLabel||d.floorId||'';
+    app.lookupPending=false;
+    app.openerReady=true;
+    applyModeUi();
+    return;
+  }
+  if(d.type==='SCAN_ACCEPTED'){
+    const r=app.records.get(d.scanToken);if(!r)return;
+    r.requestId=d.requestId;app.tokenToRequest.set(d.requestId,d.scanToken);
+    if(d.record){r.machineNumber=d.record.machineNumber||r.machineNumber;r.gameName=d.record.gameName||'';r.floorLabel=d.record.actualFloorLabel||r.floorLabel;r.result=d.record.result||r.result;}
+    if(app.mode==='device'||d.mode==='device'){
+      r.uploadText='已找到';r.uploadClass='done';render();
+      setMessage('✓ 已找到 '+(r.machineNumber||r.code)+'，正在返回主系統。');
+      setTimeout(()=>finishScanner(),350);
+    }else{
+      r.uploadText='待上傳';r.uploadClass='pending';render();
+    }
+    return;
+  }
+  if(d.type==='SCAN_IGNORED'||d.type==='SCAN_REJECTED'){
+    const r=app.records.get(d.scanToken);
+    if(r){r.uploadText=d.type==='SCAN_IGNORED'?'已略過':'未記錄';r.uploadClass=d.type==='SCAN_IGNORED'?'pending':'failed';r.message=d.message||'';}
+    if(app.mode==='device'){app.lookupPending=false;setMessage('⚠ '+(d.message||'查無設備，請重新掃描。'),true);}
+    render();return;
+  }
+  if(d.type==='UPLOAD_STATUS'){
+    const scanToken=app.tokenToRequest.get(d.requestId);const r=scanToken?app.records.get(scanToken):null;if(!r)return;
+    if(d.record){r.machineNumber=d.record.machineNumber||r.machineNumber;r.gameName=d.record.gameName||r.gameName;r.floorLabel=d.record.actualFloorLabel||r.floorLabel;r.result=d.record.result||r.result;}
+    if(d.status==='UPLOADING'){r.uploadText='上傳中';r.uploadClass='uploading'}else if(d.status==='UPLOADED'){r.uploadText='已上傳';r.uploadClass='done'}else if(d.status==='FAILED'){r.uploadText='上傳失敗';r.uploadClass='failed';r.message=d.message||''}
+    render();
+  }
+});
 window.addEventListener('beforeunload',()=>post({type:'SCANNER_CLOSED'}));
 window.addEventListener('load',()=>{post({type:'SCANNER_READY'});setTimeout(startCamera,120)});
 </script>

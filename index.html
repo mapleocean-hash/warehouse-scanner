@@ -29,12 +29,15 @@
   </section>
 </main>
 <script>
-const app={scanner:null,started:false,mode:'inventory',sessionName:'',floorLabel:'',records:new Map(),tokenToRequest:new Map(),lastSeen:new Map(),count:0,openerReady:false,lookupPending:false,soundEnabled:localStorage.getItem('warehouse-scanner-sound')!=='off',audioCtx:null,torchSupported:false,torchOn:false};
+const launchParams=new URLSearchParams(location.search);
+const app={scanner:null,started:false,mode:launchParams.get('mode')==='device'?'device':'inventory',sessionName:'',floorLabel:'',records:new Map(),tokenToRequest:new Map(),lastSeen:new Map(),count:0,openerReady:false,lookupPending:false,returnUrl:launchParams.get('returnUrl')||'',launchNonce:launchParams.get('launchNonce')||'',fallbackTimer:null,soundEnabled:localStorage.getItem('warehouse-scanner-sound')!=='off',audioCtx:null,torchSupported:false,torchOn:false};
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const token=()=>globalThis.crypto?.randomUUID?.()||('scan-'+Date.now()+'-'+Math.random().toString(36).slice(2));
 function post(msg){try{if(window.opener&&!window.opener.closed)window.opener.postMessage(msg,'*')}catch(e){}}
 function setMessage(t,bad=false){$('message').textContent=t;$('message').style.color=bad?'var(--bad)':''}
+function returnToMain(code){if(app.mode!=='device'||!app.returnUrl)return false;try{const u=new URL(app.returnUrl);u.searchParams.set('scannerMode','device');u.searchParams.set('scannerCode',String(code||''));u.searchParams.set('scannerNonce',app.launchNonce||token());location.replace(u.toString());return true}catch(e){return false}}
+function scheduleReturnFallback(code){clearTimeout(app.fallbackTimer);const delay=app.openerReady?1600:350;app.fallbackTimer=setTimeout(()=>{if(app.lookupPending)returnToMain(code)},delay)}
 function applySoundUi(){const b=$('soundBtn');if(!b)return;b.textContent=app.soundEnabled?'🔊 提示音：開':'🔇 提示音：關';b.setAttribute('aria-pressed',app.soundEnabled?'true':'false')}
 function audioContext(){if(app.audioCtx)return app.audioCtx;const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return null;try{app.audioCtx=new Ctx();return app.audioCtx}catch(e){return null}}
 async function unlockAudio(){if(!app.soundEnabled)return;const ctx=audioContext();if(!ctx)return;try{if(ctx.state==='suspended')await ctx.resume()}catch(e){}}
@@ -46,7 +49,7 @@ async function detectTorch(){app.torchSupported=false;app.torchOn=false;try{cons
 async function toggleTorch(){if(!app.scanner||!app.torchSupported)return;try{app.torchOn=!app.torchOn;await app.scanner.applyVideoConstraints({advanced:[{torch:app.torchOn}]});updateTorchUi()}catch(e){app.torchOn=false;updateTorchUi();setMessage('此裝置目前無法控制相機照明。',true)}}
 function applyModeUi(){const device=app.mode==='device';$('scannerTitle').textContent=device?'掃描設備':'盤點相機掃描';$('recordsPanel').style.display=device?'none':'';$('recordHint').textContent=device?'掃描後自動返回主系統':'掃到即記錄，背景自動上傳';$('countText').textContent=device?'單台設備查詢':'本次 '+app.count+' 台';if(device){$('sessionInfo').textContent='掃描後自動開啟設備詳情';setMessage(app.lookupPending?'正在取得設備資料…':'請對準設備 QR Code；辨識後會自動返回機台詳情。')}else{$('sessionInfo').textContent=(app.sessionName||'盤點')+' · '+(app.floorLabel||'未指定樓層')}}
 function render(){const arr=[...app.records.values()].sort((a,b)=>b.seq-a.seq);$('countText').textContent=app.mode==='device'?'單台設備查詢':'本次 '+app.count+' 台';$('rows').innerHTML=arr.length?arr.map(r=>`<tr><td><b>${esc(r.machineNumber||r.code||'—')}</b><div class="muted">${esc(r.time||'')}</div></td><td>${esc(r.gameName||'—')}</td><td>${esc(r.floorLabel||app.floorLabel||'—')}</td><td>${esc(r.result||'辨識成功')}</td><td><span class="upload ${r.uploadClass||'pending'}">${esc(r.uploadText||'待上傳')}</span>${r.message?`<div class="muted">${esc(r.message)}</div>`:''}</td></tr>`).join(''):'<tr><td colspan="5" class="empty">尚未掃描</td></tr>'}
-function addProvisional(code){const scanToken=token(),now=Date.now();const key=String(code||'').trim();if(!key)return null;if(app.mode==='device'&&app.lookupPending)return null;const prev=app.lastSeen.get(key)||0;if(now-prev<5000)return null;app.lastSeen.set(key,now);app.count++;if(app.mode==='device')app.lookupPending=true;const rec={scanToken,seq:now,code:key,machineNumber:key,gameName:'',floorLabel:app.floorLabel,result:'辨識成功',uploadText:app.mode==='device'?'查詢中':'等待主系統',uploadClass:'pending',time:new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})};app.records.set(scanToken,rec);render();post({type:'SCAN',scanToken,code:key,mode:app.mode});setMessage(app.mode==='device'?'✓ 已辨識 '+key+'，正在取得設備資料…':'✓ 已辨識 '+key+'，已交由主系統背景上傳，可直接掃下一台。');const p=$('cameraPanel');p.classList.remove('flash');void p.offsetWidth;p.classList.add('flash');return scanToken}
+function addProvisional(code){const scanToken=token(),now=Date.now();const key=String(code||'').trim();if(!key)return null;if(app.mode==='device'&&app.lookupPending)return null;const prev=app.lastSeen.get(key)||0;if(now-prev<5000)return null;app.lastSeen.set(key,now);app.count++;if(app.mode==='device')app.lookupPending=true;const rec={scanToken,seq:now,code:key,machineNumber:key,gameName:'',floorLabel:app.floorLabel,result:'辨識成功',uploadText:app.mode==='device'?'查詢中':'等待主系統',uploadClass:'pending',time:new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit',second:'2-digit'})};app.records.set(scanToken,rec);render();post({type:'SCAN',scanToken,code:key,mode:app.mode});if(app.mode==='device')scheduleReturnFallback(key);setMessage(app.mode==='device'?'✓ 已辨識 '+key+'，正在取得設備資料…':'✓ 已辨識 '+key+'，已交由主系統背景上傳，可直接掃下一台。');const p=$('cameraPanel');p.classList.remove('flash');void p.offsetWidth;p.classList.add('flash');return scanToken}
 function onDecode(decodedText){addProvisional(decodedText)}
 async function startCamera(){if(app.started)return;$('retryBtn').style.display='none';$('cameraState').className='pill warn';$('cameraState').textContent='正在開啟相機';setMessage('正在要求相機權限…');try{if(typeof Html5Qrcode==='undefined')throw new Error('QR 掃描元件載入失敗，請確認網路連線。');const scanner=new Html5Qrcode('reader');app.scanner=scanner;const config={fps:12,qrbox:(w,h)=>{const size=Math.floor(Math.min(w,h)*0.72);return{width:size,height:size}},aspectRatio:1.333333};if(typeof Html5QrcodeSupportedFormats!=='undefined')config.formatsToSupport=[Html5QrcodeSupportedFormats.QR_CODE];await scanner.start({facingMode:'environment'},config,onDecode,()=>{});app.started=true;await detectTorch();$('cameraState').className='pill good';$('cameraState').textContent='相機掃描中';setMessage(app.mode==='device'?'請對準設備 QR Code；掃到後會自動取得機台資料。':'請連續對準機台 QR Code；掃到後不必停下來等待上傳。')}catch(e){app.started=false;$('cameraState').className='pill bad';$('cameraState').textContent='相機無法啟動';setMessage('無法開啟相機：'+(e.message||e),true);$('retryBtn').style.display='inline-block'}}
 async function stopCamera(){app.torchOn=false;app.torchSupported=false;updateTorchUi();if(app.scanner){try{await app.scanner.stop()}catch(e){}try{app.scanner.clear()}catch(e){}app.scanner=null}app.started=false}
@@ -55,6 +58,7 @@ window.addEventListener('message',event=>{
   if(event.source!==window.opener)return;
   const d=event.data||{};
   if(d.type==='INIT'){
+    clearTimeout(app.fallbackTimer);
     app.mode=d.mode==='device'?'device':'inventory';
     app.sessionName=d.sessionName||'';
     app.floorLabel=d.floorLabel||d.floorId||'';
@@ -64,6 +68,7 @@ window.addEventListener('message',event=>{
     return;
   }
   if(d.type==='SCAN_ACCEPTED'){
+    clearTimeout(app.fallbackTimer);
     const r=app.records.get(d.scanToken);if(!r)return;
     r.requestId=d.requestId;app.tokenToRequest.set(d.requestId,d.scanToken);
     playSuccessTone();
@@ -78,6 +83,7 @@ window.addEventListener('message',event=>{
     return;
   }
   if(d.type==='SCAN_IGNORED'||d.type==='SCAN_REJECTED'){
+    clearTimeout(app.fallbackTimer);
     const r=app.records.get(d.scanToken);
     if(d.type==='SCAN_REJECTED')playErrorTone();
     if(r){r.uploadText=d.type==='SCAN_IGNORED'?'已略過':'未記錄';r.uploadClass=d.type==='SCAN_IGNORED'?'pending':'failed';r.message=d.message||'';}
@@ -93,7 +99,7 @@ window.addEventListener('message',event=>{
 });
 window.addEventListener('beforeunload',()=>post({type:'SCANNER_CLOSED'}));
 ['pointerdown','touchstart','keydown'].forEach(evt=>window.addEventListener(evt,()=>unlockAudio(),{once:true,passive:true}));
-window.addEventListener('load',()=>{applySoundUi();post({type:'SCANNER_READY'});setTimeout(startCamera,120)});
+window.addEventListener('load',()=>{applySoundUi();applyModeUi();post({type:'SCANNER_READY'});setTimeout(startCamera,120)});
 </script>
 </body>
 </html>
